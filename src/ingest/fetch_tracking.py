@@ -15,11 +15,37 @@ This URL is provided by the AIS stream service and is used to establish a connec
 
 WS_URL = "wss://stream.aisstream.io/v0/stream"
 
+"""
+This client will be for connecting to the AIS stream and handling AIS data.
+key parameters:
+
+
+
+Key --> You can customize the bounding boxes and message 
+types to filter the AIS data you receive.
+
+This client will also have a rate limit of around 500 messages per minute, 
+so we will need to implement some logic to handle that if we want to store the data 
+in a database or file.
+"""
+class AISStreamClient:
+    
+    def __init__(self, AIS_api_key, WS_url=WS_URL, output_dir="data/external/ais_stream", bounding_boxes=None, message_types=None):
+        self.bounding_boxes = bounding_boxes or [[[-90, -180], [90, 180]]] 
+        self.message_types = message_types or [
+            "PositionReport",
+            "StandardClassBPositionReport",
+            "ExtendedClassBPositionReport",  
+        ]
+        self.api_key = AIS_api_key
+        self.ws_url = WS_url
+        self.output_dir = output_dir
+
 
 async def connect_ais_stream():
-    api_key = os.getenv("API_KEY")
+    api_key = os.getenv("AIS_API_KEY")
     if not api_key:
-        raise ValueError("Missing API_KEY in .env")
+        raise ValueError("Missing AIS_API_KEY in .env")
 
     subscribe_message = {
         "APIKey": api_key,
