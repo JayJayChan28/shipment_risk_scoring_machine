@@ -2,18 +2,18 @@ import os
 import json
 import asyncio
 from datetime import datetime, timezone
-
+import boto3
+import io
 import websockets
 from dotenv import load_dotenv
 
 load_dotenv()
+WS_URL = "wss://stream.aisstream.io/v0/stream"
 
 """
 sets up the endpoint for the websocket connection to the AIS stream. 
 This URL is provided by the AIS stream service and is used to establish a connection to receive real-time AIS data.
 """
-
-WS_URL = "wss://stream.aisstream.io/v0/stream"
 
 """
 This client will be for connecting to the AIS stream and handling AIS data.
@@ -29,17 +29,79 @@ so we will need to implement some logic to handle that if we want to store the d
 in a database or file.
 """
 class AISStreamClient:
-    
-    def __init__(self, AIS_api_key, WS_url=WS_URL, output_dir="data/external/ais_stream", bounding_boxes=None, message_types=None):
+    #constructor for the AIS stream client
+    def __init__(
+        self,
+        ais_api_key: str,
+        ws_url: str = WS_URL,
+        bounding_boxes: list | None = None,
+        message_types: list | None = None,
+        batch_size: int = 500,
+        flush_interval_sec: int = 60,
+        s3_bucket: str | None = None,
+        s3_prefix: str = "raw/ais",
+        aws_region: str | None = None,
+        reconnect_delay_sec: int = 5,
+    ):
         self.bounding_boxes = bounding_boxes or [[[-90, -180], [90, 180]]] 
         self.message_types = message_types or [
             "PositionReport",
             "StandardClassBPositionReport",
             "ExtendedClassBPositionReport",  
         ]
-        self.api_key = AIS_api_key
-        self.ws_url = WS_url
-        self.output_dir = output_dir
+        self.api_key = ais_api_key
+        self.api_key = ais_api_key
+        self.ws_url = ws_url
+        self.batch_size = batch_size
+        self.flush_interval_sec = flush_interval_sec
+        self.s3_bucket = s3_bucket
+        self.s3_prefix = s3_prefix
+        self.aws_region = aws_region
+        self.reconnect_delay_sec = reconnect_delay_sec
+        
+        #builds the payload for subscription to the AIS stream
+    def subscription_message(self):
+        return {
+            "APIKey": self.api_key,
+            "BoundingBoxes": self.bounding_boxes,
+            "FilterMessageTypes": self.message_types,
+        }
+        
+        
+    #flushes a batch of AIS messages to S3 bucket, this is used as a help function to our actual run
+    def flush_batch(self, batch: list[dict]):
+        """Flush batch to S3 or local fallback."""
+        if not batch:
+            return
+        if self.s3_bucket: 
+            try:
+                self._flush_to_s3(batch)
+                return
+            except Exception as e:
+                print(f"[warn] S3 failed: {e}")
+                return
+            
+            
+        
+    def _flush_to_s3(self, batch: list[dict]):
+        """Flush batch to S3."""
+
+        s3 = boto3.client("s3", region_name=self.aws_region)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        key = f"{self.s3_prefix}/ais_{timestamp}.jsonl"
+        buffer = io.StringIO()
+        for record in batch:
+            buffer.write(json.dumps(record) + "\n")
+        buffer.seek(0)
+        s3.upload_fileobj(buffer, self.s3_bucket, key)
+        print(f"[info] Flushed {len(batch)} records to s3://{self.s3_bucket}/{key}")
+  
+    
+        
+        
+            
+        
+        
 
 
 async def connect_ais_stream():
