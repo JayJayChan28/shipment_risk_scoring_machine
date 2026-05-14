@@ -28,8 +28,10 @@ This client will also have a rate limit of around 500 messages per minute,
 so we will need to implement some logic to handle that if we want to store the data 
 in a database or file.
 """
+
+
 class AISStreamClient:
-    #constructor for the AIS stream client
+    # constructor for the AIS stream client
     def __init__(
         self,
         ais_api_key: str,
@@ -43,11 +45,11 @@ class AISStreamClient:
         aws_region: str | None = None,
         reconnect_delay_sec: int = 5,
     ):
-        self.bounding_boxes = bounding_boxes or [[[-90, -180], [90, 180]]] 
+        self.bounding_boxes = bounding_boxes or [[[-90, -180], [90, 180]]]
         self.message_types = message_types or [
             "PositionReport",
             "StandardClassBPositionReport",
-            "ExtendedClassBPositionReport",  
+            "ExtendedClassBPositionReport",
         ]
         self.api_key = ais_api_key
         self.api_key = ais_api_key
@@ -58,31 +60,29 @@ class AISStreamClient:
         self.s3_prefix = s3_prefix
         self.aws_region = aws_region
         self.reconnect_delay_sec = reconnect_delay_sec
-        
-        #builds the payload for subscription to the AIS stream
+
+        # builds the payload for subscription to the AIS stream
+
     def subscription_message(self):
         return {
             "APIKey": self.api_key,
             "BoundingBoxes": self.bounding_boxes,
             "FilterMessageTypes": self.message_types,
         }
-        
-        
-    #flushes a batch of AIS messages to S3 bucket, this is used as a help function to our actual run
+
+    # flushes a batch of AIS messages to S3 bucket, this is used as a help function to our actual run
     def flush_batch(self, batch: list[dict]):
         """Flush batch to S3 or local fallback."""
         if not batch:
             return
-        if self.s3_bucket: 
+        if self.s3_bucket:
             try:
                 self._flush_to_s3(batch)
                 return
             except Exception as e:
                 print(f"[warn] S3 failed: {e}")
                 return
-            
-            
-        
+
     def _flush_to_s3(self, batch: list[dict]):
         """Flush batch to S3."""
 
@@ -95,13 +95,6 @@ class AISStreamClient:
         buffer.seek(0)
         s3.upload_fileobj(buffer, self.s3_bucket, key)
         print(f"[info] Flushed {len(batch)} records to s3://{self.s3_bucket}/{key}")
-  
-    
-        
-        
-            
-        
-        
 
 
 async def connect_ais_stream():
@@ -111,7 +104,7 @@ async def connect_ais_stream():
 
     subscribe_message = {
         "APIKey": api_key,
-        "BoundingBoxes": [[[-90, -180], [90, 180]]], #bounding boxes for full world
+        "BoundingBoxes": [[[-90, -180], [90, 180]]],  # bounding boxes for full world
         "FilterMessageTypes": [
             "PositionReport",
             "StandardClassBPositionReport",
@@ -119,7 +112,9 @@ async def connect_ais_stream():
         ],
     }
 
-    async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as websocket:
+    async with websockets.connect(
+        WS_URL, ping_interval=20, ping_timeout=20
+    ) as websocket:
         await websocket.send(json.dumps(subscribe_message))
         print("Connected and subscribed to AIS stream.")
 
@@ -135,9 +130,12 @@ async def connect_ais_stream():
             lat = ais_message.get("Latitude")
             lon = ais_message.get("Longitude")
 
-            print(f"[{datetime.now(timezone.utc).isoformat()}] type={message_type} mmsi={mmsi} lat={lat} lon={lon}")
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] type={message_type} mmsi={mmsi} lat={lat} lon={lon}"
+            )
+
 
 if __name__ == "__main__":
     asyncio.run(connect_ais_stream())
-    
+
 # python src/ingest/fetch_tracking.py
