@@ -1,8 +1,8 @@
+"""Backwards-compatible re-export of AISStreamClient.
 
+The canonical implementation now lives in ``src/ingest/client.py``.
+"""
 
+from src.ingest.client import AISStreamClient
 
-class TrackingClient:
-    def __init__(self, ):
-
-    def connect(self):
-        pass
+__all__ = ["AISStreamClient"]
