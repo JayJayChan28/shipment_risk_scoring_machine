@@ -58,6 +58,7 @@ class AISStreamClient:
         self.s3_prefix = s3_prefix
         self.aws_region = aws_region
         self.reconnect_delay_sec = reconnect_delay_sec
+        self.boto3_client = boto3.client("s3", region_name=self.aws_region)
         
         #builds the payload for subscription to the AIS stream
     def subscription_message(self):
@@ -82,20 +83,21 @@ class AISStreamClient:
                 return
             
             
-        
     def _flush_to_s3(self, batch: list[dict]):
         """Flush batch to S3."""
-
-        s3 = boto3.client("s3", region_name=self.aws_region)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         key = f"{self.s3_prefix}/ais_{timestamp}.jsonl"
-        buffer = io.StringIO()
-        for record in batch:
-            buffer.write(json.dumps(record) + "\n")
-        buffer.seek(0)
-        s3.upload_fileobj(buffer, self.s3_bucket, key)
+        payload = "".join(json.dumps(r) + "\n" for r in batch)
+        self.boto3_client.put_object(
+            Bucket=self.s3_bucket,
+            Key=key,
+            Body=payload.encode("utf-8"),
+            ContentType="application/x-ndjson",
+        )
         print(f"[info] Flushed {len(batch)} records to s3://{self.s3_bucket}/{key}")
-  
+    
+    def run(self, )
+
     
         
         
