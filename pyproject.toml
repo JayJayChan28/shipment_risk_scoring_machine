@@ -3,7 +3,7 @@ name = "datalumina-project-template"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.1.1",
 ]
@@ -12,3 +12,7 @@ dependencies = [
 dev = [
     "ipykernel>=7.0.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

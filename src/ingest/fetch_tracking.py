@@ -158,14 +158,3 @@ class AISStreamClient:
             return None
 
 
-if __name__ == "__main__":
-    api_key = os.getenv("AIS_API_KEY")
-    if not api_key:
-        raise ValueError("Missing AIS_API_KEY in .env")
-
-    client = AISStreamClient(
-        ais_api_key=api_key,
-        s3_bucket=os.getenv("S3_BUCKET"),
-        aws_region=os.getenv("AWS_REGION", "us-east-1"),
-    )
-    asyncio.run(client.run())
