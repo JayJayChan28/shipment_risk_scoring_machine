@@ -145,16 +145,28 @@ class AISStreamClient:
             ais_message = message.get("Message", {}).get(message_type, {})
             if not ais_message:
                 return None
+            metadata = message.get("MetaData", {})
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "message_type": message_type,
                 "mmsi": ais_message.get("UserID"),
                 "latitude": ais_message.get("Latitude"),
                 "longitude": ais_message.get("Longitude"),
-                # include other relevant fields as needed
+                # position fields
+                "sog": ais_message.get("Sog"),
+                "cog": ais_message.get("Cog"),
+                "true_heading": ais_message.get("TrueHeading"),
+                "navigational_status": ais_message.get("NavigationalStatus"),
+                "rate_of_turn": ais_message.get("RateOfTurn"),
+                "timestamp_ais": ais_message.get("Timestamp"),
+                # static data fields (populated for ShipStaticData messages)
+                "ship_name": metadata.get("ShipName") or ais_message.get("Name"),
+                "ship_type": ais_message.get("Type"),
+                "call_sign": ais_message.get("CallSign"),
+                "imo_number": ais_message.get("ImoNumber"),
+                "destination": ais_message.get("Destination"),
+                "max_draught": ais_message.get("MaximumStaticDraught"),
             }
         except json.JSONDecodeError:
             print(f"[error] Failed to decode JSON: {message_json}")
             return None
-
-

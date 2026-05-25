@@ -9,12 +9,13 @@ load_dotenv()
 create_ais_client = AISStreamClient(
     ais_api_key=os.getenv("AIS_API_KEY"),
     bounding_boxes=[
-        [[30, -130], [50, -60]]
-    ],  # Example bounding box (latitude and longitude)
+        [[49, -5], [52, 2]]  # English Channel
+    ],
     message_types=[
         "PositionReport",
         "StandardClassBPositionReport",
         "ExtendedClassBPositionReport",
+        "ShipStaticData",
     ],
     batch_size=500,
     flush_interval_sec=60,
