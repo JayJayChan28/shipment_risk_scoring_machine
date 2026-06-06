@@ -1,8 +1,14 @@
 import json
 import os
+import re
+from collections import defaultdict
+from urllib.parse import urlparse
 
 import boto3
 import pandas as pd
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.fs as pafs
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,11 +21,24 @@ POSITION_TYPES = {
 
 
 def get_s3_client(region: str | None = None):
-    return boto3.client("s3", region_name=region or os.getenv("AWS_REGION", "us-east-2"))
+    return boto3.client(
+        "s3", region_name=region or os.getenv("AWS_REGION", "us-east-2")
+    )
 
 
 def normalize_prefix(prefix: str) -> str:
     return prefix.strip("/") + "/"
+
+
+def _build_s3_filesystem() -> pafs.S3FileSystem:
+    return pafs.S3FileSystem(region=os.getenv("AWS_REGION", "us-east-2"))
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3" or not parsed.netloc:
+        raise ValueError(f"Expected an s3:// URI, got: {uri}")
+    return parsed.netloc, parsed.path.lstrip("/").rstrip("/")
 
 
 def iter_raw_keys(s3_client, bucket: str, prefix: str):
@@ -142,25 +161,47 @@ def write_partitioned_parquet(
     movement_path: str,
     static_path: str,
 ):
-    """Write movement/static Silver outputs as partitioned parquet datasets."""
-    os.makedirs(movement_path, exist_ok=True)
-    os.makedirs(static_path, exist_ok=True)
+    """Write movement/static Silver outputs as partitioned parquet datasets.
 
-    if not movement_df.empty:
-        movement_df.to_parquet(
-            movement_path,
+    S3 destinations are written directly without staging to local disk.
+    """
+
+    def _write_df(df: pd.DataFrame, destination: str) -> None:
+        if df.empty:
+            return
+
+        if destination.startswith("s3://"):
+            bucket, prefix = _parse_s3_uri(destination)
+            filesystem = _build_s3_filesystem()
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            ds.write_dataset(
+                table,
+                base_dir=f"{bucket}/{prefix}",
+                filesystem=filesystem,
+                format="parquet",
+                partitioning=["event_date"],
+                existing_data_behavior="overwrite_or_ignore",
+            )
+            return
+
+        os.makedirs(destination, exist_ok=True)
+        df.to_parquet(
+            destination,
             index=False,
             engine="pyarrow",
             partition_cols=["event_date"],
         )
 
-    if not static_df.empty:
-        static_df.to_parquet(
-            static_path,
-            index=False,
-            engine="pyarrow",
-            partition_cols=["event_date"],
-        )
+    _write_df(movement_df, movement_path)
+    _write_df(static_df, static_path)
+
+
+def _date_from_key(key: str) -> str:
+    """Extract YYYY-MM-DD from a raw key like raw/ais/ais_20260525T123456Z.jsonl."""
+    m = re.search(r"(\d{4})(\d{2})(\d{2})T", key)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return "unknown"
 
 
 def run_silver_backfill(
@@ -171,25 +212,45 @@ def run_silver_backfill(
     static_path: str,
     max_files: int | None = None,
 ):
-    """Backfill Silver movement/static datasets from raw JSONL objects."""
+    """Backfill Silver movement/static datasets from raw JSONL objects.
+
+    Keys are grouped by date extracted from the filename. All files for a
+    given date are read into memory together, cleaned as one batch, then
+    written to S3 in a single write per date. This keeps S3 PUT calls equal
+    to the number of unique dates rather than the number of raw files.
+    """
+    # Group all raw keys by date without reading any data yet.
+    keys_by_date: dict[str, list[str]] = defaultdict(list)
+    for key in iter_raw_keys(s3_client, bucket, raw_prefix):
+        keys_by_date[_date_from_key(key)].append(key)
+
+    total_dates = len(keys_by_date)
     files_processed = 0
     movement_rows = 0
     static_rows = 0
 
-    for key in iter_raw_keys(s3_client, bucket, raw_prefix):
-        raw_df = read_one_jsonl_file(s3_client, bucket, key)
-        movement_df, static_df = clean_and_split(raw_df)
+    for date_idx, (date, keys) in enumerate(sorted(keys_by_date.items()), start=1):
+        print(
+            f"[info] processing date {date} ({date_idx}/{total_dates}) — {len(keys)} files"
+        )
 
+        raw_frames: list[pd.DataFrame] = []
+        for key in keys:
+            raw_frames.append(read_one_jsonl_file(s3_client, bucket, key))
+            files_processed += 1
+            if max_files is not None and files_processed >= max_files:
+                break
+
+        # Combine all raw data for this date, clean once, write once.
+        raw_day = pd.concat(raw_frames, ignore_index=True)
+        movement_df, static_df = clean_and_split(raw_day)
         write_partitioned_parquet(movement_df, static_df, movement_path, static_path)
 
-        files_processed += 1
         movement_rows += len(movement_df)
         static_rows += len(static_df)
-
-        if files_processed % 50 == 0:
-            print(
-                f"[info] processed {files_processed} files | movement_rows={movement_rows} | static_rows={static_rows}"
-            )
+        print(
+            f"[info] wrote date {date} | movement_rows={len(movement_df)} | static_rows={len(static_df)}"
+        )
 
         if max_files is not None and files_processed >= max_files:
             break
@@ -199,8 +260,3 @@ def run_silver_backfill(
         "movement_rows": movement_rows,
         "static_rows": static_rows,
     }
-
-
-
-
-

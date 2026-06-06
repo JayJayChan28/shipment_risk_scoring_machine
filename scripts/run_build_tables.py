@@ -10,10 +10,10 @@ def main() -> None:
 
     bucket = os.getenv("S3_BUCKET", "shipment-risk-scoring")
     raw_prefix = os.getenv("S3_PREFIX", "raw/ais")
+    silver_prefix = os.getenv("S3_SILVER_PREFIX", "silver/ais")
 
-    # Local Silver dataset outputs.
-    movement_out = "data/processed/silver/position"
-    static_out = "data/processed/silver/static"
+    movement_out = f"s3://{bucket}/{silver_prefix}/position"
+    static_out = f"s3://{bucket}/{silver_prefix}/static"
 
     client = get_s3_client()
     stats = run_silver_backfill(
