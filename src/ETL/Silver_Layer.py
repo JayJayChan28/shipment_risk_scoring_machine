@@ -160,6 +160,7 @@ def write_partitioned_parquet(
     static_df: pd.DataFrame,
     movement_path: str,
     static_path: str,
+    overwrite_partitions: bool = False,
 ):
     """Write movement/static Silver outputs as partitioned parquet on S3."""
 
@@ -176,7 +177,9 @@ def write_partitioned_parquet(
             filesystem=filesystem,
             format="parquet",
             partitioning=["event_date"],
-            existing_data_behavior="overwrite_or_ignore",
+            existing_data_behavior=(
+                "delete_matching" if overwrite_partitions else "overwrite_or_ignore"
+            ),
         )
 
     _write_df(movement_df, movement_path)
@@ -221,6 +224,8 @@ def run_silver_backfill(
     movement_path: str,
     static_path: str,
     max_files: int | None = None,
+    skip_existing: bool = True,
+    overwrite_partitions: bool = False,
 ):
     """Backfill Silver movement/static datasets from raw JSONL objects.
 
@@ -228,18 +233,39 @@ def run_silver_backfill(
     given date are read into memory together, cleaned as one batch, then
     written to S3 in a single write per date. This keeps S3 PUT calls equal
     to the number of unique dates rather than the number of raw files.
+
+    When ``skip_existing`` is True (default), dates that already have a
+    movement partition on S3 are skipped entirely.
     """
     # Group all raw keys by date without reading any data yet.
     keys_by_date: dict[str, list[str]] = defaultdict(list)
     for key in iter_raw_keys(s3_client, bucket, raw_prefix):
         keys_by_date[_date_from_key(key)].append(key)
 
+    existing_dates: set[str] = set()
+    if skip_existing:
+        existing_dates = _existing_partition_dates(s3_client, movement_path)
+        if existing_dates:
+            print(
+                f"[info] skipping {len(existing_dates)} date(s) already in silver: "
+                f"{', '.join(sorted(existing_dates))}"
+            )
+
     total_dates = len(keys_by_date)
     files_processed = 0
+    dates_skipped = 0
     movement_rows = 0
     static_rows = 0
 
     for date_idx, (date, keys) in enumerate(sorted(keys_by_date.items()), start=1):
+        if skip_existing and date in existing_dates:
+            dates_skipped += 1
+            print(
+                f"[info] skipping date {date} ({date_idx}/{total_dates}) — "
+                f"already in silver ({len(keys)} raw files)"
+            )
+            continue
+
         print(
             f"[info] processing date {date} ({date_idx}/{total_dates}) — {len(keys)} files"
         )
@@ -254,7 +280,13 @@ def run_silver_backfill(
         # Combine all raw data for this date, clean once, write once.
         raw_day = pd.concat(raw_frames, ignore_index=True)
         movement_df, static_df = clean_and_split(raw_day)
-        write_partitioned_parquet(movement_df, static_df, movement_path, static_path)
+        write_partitioned_parquet(
+            movement_df,
+            static_df,
+            movement_path,
+            static_path,
+            overwrite_partitions=overwrite_partitions,
+        )
 
         movement_rows += len(movement_df)
         static_rows += len(static_df)
@@ -267,6 +299,7 @@ def run_silver_backfill(
 
     return {
         "files_processed": files_processed,
+        "dates_skipped": dates_skipped,
         "movement_rows": movement_rows,
         "static_rows": static_rows,
     }
