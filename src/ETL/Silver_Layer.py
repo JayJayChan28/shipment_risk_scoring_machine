@@ -161,35 +161,22 @@ def write_partitioned_parquet(
     movement_path: str,
     static_path: str,
 ):
-    """Write movement/static Silver outputs as partitioned parquet datasets.
-
-    S3 destinations are written directly without staging to local disk.
-    """
+    """Write movement/static Silver outputs as partitioned parquet on S3."""
 
     def _write_df(df: pd.DataFrame, destination: str) -> None:
         if df.empty:
             return
 
-        if destination.startswith("s3://"):
-            bucket, prefix = _parse_s3_uri(destination)
-            filesystem = _build_s3_filesystem()
-            table = pa.Table.from_pandas(df, preserve_index=False)
-            ds.write_dataset(
-                table,
-                base_dir=f"{bucket}/{prefix}",
-                filesystem=filesystem,
-                format="parquet",
-                partitioning=["event_date"],
-                existing_data_behavior="overwrite_or_ignore",
-            )
-            return
-
-        os.makedirs(destination, exist_ok=True)
-        df.to_parquet(
-            destination,
-            index=False,
-            engine="pyarrow",
-            partition_cols=["event_date"],
+        bucket, prefix = _parse_s3_uri(destination)
+        filesystem = _build_s3_filesystem()
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        ds.write_dataset(
+            table,
+            base_dir=f"{bucket}/{prefix}",
+            filesystem=filesystem,
+            format="parquet",
+            partitioning=["event_date"],
+            existing_data_behavior="overwrite_or_ignore",
         )
 
     _write_df(movement_df, movement_path)
@@ -202,6 +189,29 @@ def _date_from_key(key: str) -> str:
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     return "unknown"
+
+
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _existing_partition_dates(s3_client, path: str) -> set[str]:
+    """Return event_date partitions already written under an S3 dataset path.
+
+    Handles both directory-style (``2026-05-25/``) and hive-style
+    (``event_date=2026-05-25/``) partition folders. Missing destinations
+    return an empty set.
+    """
+    dates: set[str] = set()
+    bucket, prefix = _parse_s3_uri(path)
+    prefix = normalize_prefix(prefix)
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for common in page.get("CommonPrefixes", []):
+            folder = common["Prefix"][len(prefix):].strip("/")
+            m = _DATE_RE.search(folder)
+            if m:
+                dates.add(m.group(1))
+    return dates
 
 
 def run_silver_backfill(

@@ -1,6 +1,8 @@
 import os
 import json
 import asyncio
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 import boto3
 
@@ -9,6 +11,31 @@ from dotenv import load_dotenv
 
 load_dotenv()
 WS_URL = "wss://stream.aisstream.io/v0/stream"
+
+
+def _build_logger(log_dir: str) -> logging.Logger:
+    """Logger that writes to both stdout and a rotating file in log_dir."""
+    logger = logging.getLogger("ais_ingest")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z"
+    )
+
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "ingest.log"), maxBytes=5_000_000, backupCount=5
+    )
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    return logger
 
 """
 sets up the endpoint for the websocket connection to the AIS stream. 
@@ -44,6 +71,8 @@ class AISStreamClient:
         s3_prefix: str = "raw/ais",
         aws_region: str | None = None,
         reconnect_delay_sec: int = 5,
+        max_reconnect_delay_sec: int = 60,
+        log_dir: str = "logs",
     ):
         self.bounding_boxes = bounding_boxes or [[[-90, -180], [90, 180]]]
         self.message_types = message_types or [
@@ -59,6 +88,8 @@ class AISStreamClient:
         self.s3_prefix = s3_prefix
         self.aws_region = aws_region
         self.reconnect_delay_sec = reconnect_delay_sec
+        self.max_reconnect_delay_sec = max_reconnect_delay_sec
+        self.logger = _build_logger(log_dir)
 
         self.boto3_client = boto3.client("s3", region_name=self.aws_region)
 
@@ -78,8 +109,8 @@ class AISStreamClient:
             try:
                 self._flush_to_s3(batch)
                 return
-            except Exception as e:
-                print(f"[warn] S3 failed: {e}")
+            except Exception:
+                self.logger.exception("S3 flush failed; dropping %d records", len(batch))
                 return
 
     def _flush_to_s3(self, batch: list[dict]):
@@ -93,10 +124,11 @@ class AISStreamClient:
             Body=payload.encode("utf-8"),
             ContentType="application/x-ndjson",
         )
-        print(f"[info] Flushed {len(batch)} records to s3://{self.s3_bucket}/{key}")
+        self.logger.info("Flushed %d records to s3://%s/%s", len(batch), self.s3_bucket, key)
 
     async def run(self) -> None:
         """Connect, subscribe, batch incoming messages, flush on size/time, and auto-reconnect."""
+        delay = self.reconnect_delay_sec
         while True:
             batch: list[dict] = []
             last_flush = asyncio.get_event_loop().time()
@@ -105,7 +137,8 @@ class AISStreamClient:
                     self.ws_url, ping_interval=20, ping_timeout=20
                 ) as ws:
                     await ws.send(json.dumps(self.subscription_message()))
-                    print(f"[info] Connected to AIS stream at {self.ws_url}")
+                    self.logger.info("Connected to AIS stream at %s", self.ws_url)
+                    delay = self.reconnect_delay_sec
 
                     async for message_json in ws:
                         record = self.normalize_message(message_json)
@@ -123,19 +156,27 @@ class AISStreamClient:
                             batch = []
                             last_flush = now
 
-            except (websockets.ConnectionClosed, OSError) as e:
-                print(
-                    f"[warn] Connection lost: {e}. Reconnecting in {self.reconnect_delay_sec}s..."
-                )
-                if batch:
-                    self.flush_batch(batch)
-                await asyncio.sleep(self.reconnect_delay_sec)
-
             except asyncio.CancelledError:
-                print("[info] Shutting down — flushing remaining records...")
+                self.logger.info("Shutting down — flushing remaining records...")
                 if batch:
                     self.flush_batch(batch)
                 raise
+
+            except (websockets.ConnectionClosed, OSError) as e:
+                self.logger.warning("Connection lost: %s. Reconnecting in %ss...", e, delay)
+                if batch:
+                    self.flush_batch(batch)
+                await asyncio.sleep(delay)
+                delay = min(max(delay, 1) * 2, self.max_reconnect_delay_sec)
+
+            except Exception:
+                self.logger.exception(
+                    "Unexpected error in ingest loop. Reconnecting in %ss...", delay
+                )
+                if batch:
+                    self.flush_batch(batch)
+                await asyncio.sleep(delay)
+                delay = min(max(delay, 1) * 2, self.max_reconnect_delay_sec)
 
     def normalize_message(self, message_json: str) -> dict | None:
         """Normalize raw AIS message JSON into a consistent format."""
@@ -168,5 +209,5 @@ class AISStreamClient:
                 "max_draught": ais_message.get("MaximumStaticDraught"),
             }
         except json.JSONDecodeError:
-            print(f"[error] Failed to decode JSON: {message_json}")
+            self.logger.error("Failed to decode JSON: %s", message_json)
             return None
