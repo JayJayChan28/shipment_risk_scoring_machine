@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 from collections import defaultdict
 from urllib.parse import urlparse
 
@@ -177,6 +178,11 @@ def write_partitioned_parquet(
             filesystem=filesystem,
             format="parquet",
             partitioning=["event_date"],
+            # Unique basename per call so separate write_dataset invocations never
+            # collide on "part-0.parquet". Without this, midnight-straggler records
+            # routed into an already-written partition overwrite the full file under
+            # "overwrite_or_ignore", silently destroying it.
+            basename_template=f"part-{{i}}-{uuid.uuid4().hex}.parquet",
             existing_data_behavior=(
                 "delete_matching" if overwrite_partitions else "overwrite_or_ignore"
             ),

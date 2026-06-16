@@ -15,10 +15,15 @@ def main() -> None:
     movement_out = f"s3://{bucket}/{silver_prefix}/position"
     static_out = f"s3://{bucket}/{silver_prefix}/static"
 
-    # One-time full rebuild: re-read all raw and replace existing silver partitions.
-    # After this run completes, set skip_existing=True and overwrite_partitions=False.
+    # One-time full rebuild: re-read all raw and rewrite silver from scratch.
+    # The silver destination must be wiped beforehand (see clear_silver_outputs.py);
+    # we then append with unique per-write filenames. Do NOT use delete_matching
+    # here: raw files are grouped by filename-date, but midnight-straggler records
+    # cross into the prior day's event_date partition. delete_matching would wipe
+    # that already-written partition and leave only the stragglers.
+    # After this run completes, set skip_existing=True.
     skip_existing = False
-    overwrite_partitions = True
+    overwrite_partitions = False
 
     client = get_s3_client()
     stats = run_silver_backfill(

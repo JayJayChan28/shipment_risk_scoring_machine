@@ -1,0 +1,36 @@
+[Unit]
+Description=AIS shipment-risk ingest (WebSocket -> S3 raw/ais)
+# Wait for the network to be fully up before connecting to the AIS WebSocket.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ---- FILL IN THESE THREE ----
+# Linux user the process runs as (e.g. ubuntu). Output of `whoami` on the box.
+User=<USER>
+# Absolute path to the repo root on the instance (no trailing slash).
+WorkingDirectory=<REPO_DIR>
+# Absolute path to the venv's python + the ingest script.
+ExecStart=<REPO_DIR>/.venv/bin/python <REPO_DIR>/scripts/run_ingest_tracking.py
+# ------------------------------
+
+# Loads AIS_API_KEY, S3_BUCKET, AWS_REGION, etc. The script also calls
+# load_dotenv(), and WorkingDirectory above makes that .env resolve too,
+# so this line is belt-and-suspenders. Remove it if you don't keep a .env.
+EnvironmentFile=<REPO_DIR>/.env
+
+# Auto-restart on any exit (crash, network drop, AIS server hangup).
+Restart=always
+RestartSec=5
+# Don't give up after repeated quick failures.
+StartLimitIntervalSec=0
+
+# Logs go to the journal: `journalctl -u ais-ingest -f`
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ais-ingest
+
+[Install]
+WantedBy=multi-user.target
